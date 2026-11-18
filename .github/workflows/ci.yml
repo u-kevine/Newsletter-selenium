@@ -1,0 +1,148 @@
+name: Selenium UI Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:        # adds a "Run workflow" button in the Actions tab
+
+permissions:
+  contents: read            # read the repo code
+  checks: write             # publish the test report as a "check"
+  pull-requests: write      # show results on pull requests
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run Selenium tests (Chrome, headless)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install Chrome and ChromeDriver
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+
+      - name: Print tool versions
+        run: |
+          echo "::group::Tool versions"
+          java -version
+          mvn -v
+          "${{ steps.setup-chrome.outputs.chrome-path }}" --version
+          "${{ steps.setup-chrome.outputs.chromedriver-path }}" --version
+          echo "::endgroup::"
+
+      - name: Install Maven dependencies
+        run: mvn -B -ntp dependency:go-offline
+
+      - name: Run tests
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+          CHROMEDRIVER_PATH: ${{ steps.setup-chrome.outputs.chromedriver-path }}
+        run: mvn -B -ntp test -Dheadless=true
+
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'target/surefire-reports/TEST-*.xml'
+          check_name: Selenium test report
+          detailed_summary: true
+          include_passed: true
+          require_tests: true
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 14
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-screenshots
+          path: target/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
+    
+  notify:
+    name: Notify team
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Work out build status
+        id: status
+        run: |
+          case "${{ needs.test.result }}" in
+            success)   echo "label=PASSED"    >> "$GITHUB_OUTPUT"; echo "icon=:white_check_mark:" >> "$GITHUB_OUTPUT" ;;
+            cancelled) echo "label=CANCELLED" >> "$GITHUB_OUTPUT"; echo "icon=:warning:"          >> "$GITHUB_OUTPUT" ;;
+            *)         echo "label=FAILED"    >> "$GITHUB_OUTPUT"; echo "icon=:x:"                >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "${{ steps.status.outputs.icon }} Selenium tests ${{ steps.status.outputs.label }} on ${{ github.repository }} (${{ github.ref_name }})"
+            blocks:
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "${{ steps.status.outputs.icon }} *Selenium tests ${{ steps.status.outputs.label }}*\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref_name }}\n*Commit:* `${{ github.sha }}`\n*Triggered by:* ${{ github.actor }} (${{ github.event_name }})\n<${{ env.RUN_URL }}|View run and test report>"
+
+      - name: Notify by email
+        if: env.MAIL_USERNAME != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Selenium CI <${{ secrets.MAIL_USERNAME }}>
+          to: ${{ secrets.MAIL_TO }}
+          subject: "[${{ steps.status.outputs.label }}] Selenium tests – ${{ github.repository }} (${{ github.ref_name }})"
+          body: |
+            Selenium UI tests ${{ steps.status.outputs.label }}.
+
+            Repository:   ${{ github.repository }}
+            Branch:       ${{ github.ref_name }}
+            Commit:       ${{ github.sha }}
+            Triggered by: ${{ github.actor }} (${{ github.event_name }})
+
+            Run details and test report:
+            ${{ env.RUN_URL }}
+
+      - name: Note when no notification channel is configured
+        if: env.SLACK_WEBHOOK_URL == '' && env.MAIL_USERNAME == ''
+        run: echo "::notice::No SLACK_WEBHOOK_URL or MAIL_* secrets set - skipping Slack/email notifications."
+        
