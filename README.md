@@ -6,8 +6,6 @@ Automated UI tests for a newsletter sign-up form with a success message, built w
 **Selenium WebDriver**, **ChromeDriver**, **JUnit 5** and the **Page Object Model (PageFactory)**,
 and run automatically by a **GitHub Actions** CI pipeline that notifies the team on Slack.
 
-## Tech stack
-
 | Tool | Purpose |
 |---|---|
 | Java 17 | Test code language |
@@ -90,9 +88,6 @@ By default the tests open `app/index.html` directly from disk, so no web server 
 **Outputs:**
 - `target/surefire-reports/`: test results (XML and text)
 - `target/screenshots/`: a PNG of the page for every failed test
-
-> **Codespaces note:** Codespaces has no display, so run headless (the default). The forwarded-port
-> pop-ups that appear during a run are ChromeDriver's local command port, not a website, and can be ignored.
 
 ## 3. Test cases (JUnit 5)
 
